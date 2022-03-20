@@ -53,7 +53,7 @@ type Map[K comparable, V any] struct {
 	//
 	// If the dirty map is nil, the next write to the map will initialize it by
 	// making a shallow copy of the clean map, omitting stale entries.
-	dirty map[K]*entry[V]
+	dirty map[K]*entry
 
 	// misses counts the number of loads since the read map was last updated that
 	// needed to lock mu to determine whether the key was present.
@@ -66,7 +66,7 @@ type Map[K comparable, V any] struct {
 
 // readOnly is an immutable struct stored atomically in the Map.read field.
 type readOnly[K comparable, V any] struct {
-	m       map[K]*entry[V]
+	m       map[K]*entry
 	amended bool // true if the dirty map contains some key not in m.
 }
 
@@ -75,7 +75,7 @@ type readOnly[K comparable, V any] struct {
 var expunged = unsafe.Pointer(new(any))
 
 // An entry is a slot in the map corresponding to a particular key.
-type entry[V any] struct {
+type entry struct {
 	// p points to the interface{} value stored for the entry.
 	//
 	// If p == nil, the entry has been deleted, and either m.dirty == nil or
@@ -98,8 +98,8 @@ type entry[V any] struct {
 	p unsafe.Pointer // *V
 }
 
-func newEntry[V any](i V) *entry[V] {
-	return &entry[V]{p: unsafe.Pointer(&i)}
+func newEntry[V any](i V) *entry {
+	return &entry{p: unsafe.Pointer(&i)}
 }
 
 // Load returns the value stored in the map for a key, or nil if no
@@ -127,10 +127,10 @@ func (m *Map[K, V]) Load(key K) (value V, ok bool) {
 	if !ok {
 		return
 	}
-	return e.load()
+	return entryLoad[V](e)
 }
 
-func (e *entry[V]) load() (value V, ok bool) {
+func entryLoad[V any](e *entry) (value V, ok bool) {
 	p := atomic.LoadPointer(&e.p)
 	if p == nil || p == expunged {
 		return
@@ -141,7 +141,7 @@ func (e *entry[V]) load() (value V, ok bool) {
 // Store sets the value for a key.
 func (m *Map[K, V]) Store(key K, value V) {
 	read, _ := m.read.Load().(readOnly[K, V])
-	if e, ok := read.m[key]; ok && e.tryStore(&value) {
+	if e, ok := read.m[key]; ok && tryStore(e, &value) {
 		return
 	}
 
@@ -153,9 +153,9 @@ func (m *Map[K, V]) Store(key K, value V) {
 			// non-nil dirty map and this entry is not in it.
 			m.dirty[key] = e
 		}
-		e.storeLocked(&value)
+		entryStoreLocked(e, &value)
 	} else if e, ok := m.dirty[key]; ok {
-		e.storeLocked(&value)
+		entryStoreLocked(e, &value)
 	} else {
 		if !read.amended {
 			// We're adding the first new key to the dirty map.
@@ -172,7 +172,7 @@ func (m *Map[K, V]) Store(key K, value V) {
 //
 // If the entry is expunged, tryStore returns false and leaves the entry
 // unchanged.
-func (e *entry[V]) tryStore(i *V) bool {
+func tryStore[V any](e *entry, i *V) bool {
 	for {
 		p := atomic.LoadPointer(&e.p)
 		if p == expunged {
@@ -188,14 +188,14 @@ func (e *entry[V]) tryStore(i *V) bool {
 //
 // If the entry was previously expunged, it must be added to the dirty map
 // before m.mu is unlocked.
-func (e *entry[V]) unexpungeLocked() (wasExpunged bool) {
+func (e *entry) unexpungeLocked() (wasExpunged bool) {
 	return atomic.CompareAndSwapPointer(&e.p, expunged, nil)
 }
 
-// storeLocked unconditionally stores a value to the entry.
+// entryStoreLocked unconditionally stores a value to the entry.
 //
 // The entry must be known not to be expunged.
-func (e *entry[V]) storeLocked(i *V) {
+func entryStoreLocked[V any](e *entry, i *V) {
 	atomic.StorePointer(&e.p, unsafe.Pointer(i))
 }
 
@@ -206,7 +206,7 @@ func (m *Map[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 	// Avoid locking if it's a clean hit.
 	read, _ := m.read.Load().(readOnly[K, V])
 	if e, ok := read.m[key]; ok {
-		actual, loaded, ok := e.tryLoadOrStore(value)
+		actual, loaded, ok := entryTryLoadOrStore(e, value)
 		if ok {
 			return actual, loaded
 		}
@@ -218,9 +218,9 @@ func (m *Map[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 		if e.unexpungeLocked() {
 			m.dirty[key] = e
 		}
-		actual, loaded, _ = e.tryLoadOrStore(value)
+		actual, loaded, _ = entryTryLoadOrStore(e, value)
 	} else if e, ok := m.dirty[key]; ok {
-		actual, loaded, _ = e.tryLoadOrStore(value)
+		actual, loaded, _ = entryTryLoadOrStore(e, value)
 		m.missLocked()
 	} else {
 		if !read.amended {
@@ -237,12 +237,12 @@ func (m *Map[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 	return actual, loaded
 }
 
-// tryLoadOrStore atomically loads or stores a value if the entry is not
+// entryTryLoadOrStore atomically loads or stores a value if the entry is not
 // expunged.
 //
-// If the entry is expunged, tryLoadOrStore leaves the entry unchanged and
+// If the entry is expunged, entryTryLoadOrStore leaves the entry unchanged and
 // returns with ok==false.
-func (e *entry[V]) tryLoadOrStore(i V) (actual V, loaded, ok bool) {
+func entryTryLoadOrStore[V any](e *entry, i V) (actual V, loaded, ok bool) {
 	p := atomic.LoadPointer(&e.p)
 	if p == expunged {
 		return
@@ -289,7 +289,7 @@ func (m *Map[K, V]) LoadAndDelete(key K) (value V, loaded bool) {
 		m.mu.Unlock()
 	}
 	if ok {
-		return e.delete()
+		return entryDelete[V](e)
 	}
 	return
 }
@@ -299,7 +299,7 @@ func (m *Map[K, V]) Delete(key K) {
 	m.LoadAndDelete(key)
 }
 
-func (e *entry[V]) delete() (value V, ok bool) {
+func entryDelete[V any](e *entry) (value V, ok bool) {
 	for {
 		p := atomic.LoadPointer(&e.p)
 		if p == nil || p == expunged {
@@ -345,7 +345,7 @@ func (m *Map[K, V]) Range(f func(key K, value V) bool) {
 	}
 
 	for k, e := range read.m {
-		v, ok := e.load()
+		v, ok := entryLoad[V](e)
 		if !ok {
 			continue
 		}
@@ -371,7 +371,7 @@ func (m *Map[K, V]) dirtyLocked() {
 	}
 
 	read, _ := m.read.Load().(readOnly[K, V])
-	m.dirty = make(map[K]*entry[V], len(read.m))
+	m.dirty = make(map[K]*entry, len(read.m))
 	for k, e := range read.m {
 		if !e.tryExpungeLocked() {
 			m.dirty[k] = e
@@ -379,7 +379,7 @@ func (m *Map[K, V]) dirtyLocked() {
 	}
 }
 
-func (e *entry[V]) tryExpungeLocked() (isExpunged bool) {
+func (e *entry) tryExpungeLocked() (isExpunged bool) {
 	p := atomic.LoadPointer(&e.p)
 	for p == nil {
 		if atomic.CompareAndSwapPointer(&e.p, nil, expunged) {
