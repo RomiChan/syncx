@@ -37,7 +37,7 @@ func (v *Pointer[T]) Store(val *T) {
 	atomic.StorePointer(&v.value, unsafe.Pointer(val))
 }
 
-// Store sets the value to Pointer v.
+// StoreValue sets the value to Pointer v.
 func (v *Pointer[T]) StoreValue(val T) {
 	atomic.StorePointer(&v.value, unsafe.Pointer(&val))
 }
