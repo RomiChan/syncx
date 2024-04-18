@@ -1,0 +1,17 @@
+name: test
+on: [ push, pull_request ]
+
+jobs:
+  test_ubuntu:
+    name: Run Test on Ubuntu 🧪
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go Environment
+        uses: actions/setup-go@master
+
+      - name: Run Go Test
+        run: go test $(go list ./...)
