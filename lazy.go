@@ -30,7 +30,7 @@ func (l *Lazy[T]) slowGet() T {
 	for !l.locked.CompareAndSwap(0, 1) {
 		runtime.Gosched()
 	}
-	defer l.locked.Store(1)
+	defer l.locked.Store(0)
 
 	if l.done.Load() == 0 {
 		defer l.done.Store(1)
