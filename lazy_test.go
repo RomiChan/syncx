@@ -4,10 +4,14 @@
 
 package syncx
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 var one = Lazy[int]{
 	Init: func() int {
+		time.Sleep(time.Second) // simulate slow work
 		return 1
 	},
 }
